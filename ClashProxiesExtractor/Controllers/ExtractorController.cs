@@ -11,6 +11,20 @@ namespace ClashProxiesExtractor.Controllers
         private static readonly IDeserializer YamlDeserializer = new DeserializerBuilder().Build();
         private static readonly ISerializer YamlSerializer = new SerializerBuilder().Build();
 
+        public ApiController()
+        {
+            HttpClient.DefaultRequestHeaders.UserAgent.Clear();
+            HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("ClashX Runtime");
+            try
+            {
+                HttpClient.Timeout = TimeSpan.FromSeconds(10);
+            }
+            catch (Exception)
+            {
+                ;
+            }
+        }
+        
         [HttpGet("extract")]
         public async Task<IActionResult> GetApiAsync([FromQuery] string urls, [FromQuery] string names)
         {
@@ -37,46 +51,81 @@ namespace ClashProxiesExtractor.Controllers
 
                 for (var index = 0; index < arrUrls.Length; index++)
                 {
-                    HttpClient.DefaultRequestHeaders.UserAgent.Clear();
-                    HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                        "ClashX Runtime");
-                    var result = await HttpClient.GetAsync(arrUrls[index]);
-                    result.EnsureSuccessStatusCode();
-                    var configFile = await result.Content.ReadAsStringAsync();
-
-                    object? config;
-                    using (var reader = new StringReader(configFile))
+                    try
                     {
-                        try
+                        var result = await HttpClient.GetAsync(arrUrls[index]);
+                        result.EnsureSuccessStatusCode();
+                        var configFile = await result.Content.ReadAsStringAsync();
+
+                        object? config;
+                        using (var reader = new StringReader(configFile))
                         {
-                            config = YamlDeserializer.Deserialize(reader);
+                                config = YamlDeserializer.Deserialize(reader);
                         }
-                        catch (Exception ex)
+
+                        if (!(config is IDictionary<object, object> configDictionary) ||
+                            !configDictionary.ContainsKey("proxies"))
+                            throw new Exception("No proxies in this config.");
+
+                        var yamlResponse = new Dictionary<string, object>
                         {
-                            return StatusCode(StatusCodes.Status500InternalServerError,
-                                $"Unable to parse config, error: {ex.Message}");
-                        }
-                    }
-
-                    if (!(config is IDictionary<object, object> configDictionary) ||
-                        !configDictionary.ContainsKey("proxies"))
-                    {
-                        return BadRequest("No proxies in this config");
-                    }
-
-                    var yamlResponse = new Dictionary<string, object>
-                    {
-                        { "proxies", configDictionary["proxies"] }
-                    };
-                    if (yamlResponse["proxies"] is List<object> listProxies)
-                    {
+                            { "proxies", configDictionary["proxies"] }
+                        };
+                        
+                        if (yamlResponse["proxies"] is not List<object> listProxies) 
+                            continue;
+                        
+                        // save to local file for fallback
+                        await System.IO.File.WriteAllTextAsync($"./{arrNames[index]}.yml", 
+                            YamlSerializer.Serialize(yamlResponse));
+                        
                         foreach (var proxy in listProxies)
                         {
-                            if (proxy is Dictionary<object, object> tempProxy)
-                            {
-                                tempProxy["name"] = arrNames[index] + tempProxy["name"];
-                                allYamlResponses["proxies"].Add(tempProxy);
-                            }
+                            if (proxy is not Dictionary<object, object> tempProxy) 
+                                continue;
+                            
+                            tempProxy["name"] =$"{arrNames[index]} {tempProxy["name"]}";
+                            allYamlResponses["proxies"].Add(tempProxy);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        // exception alert
+                        allYamlResponses["proxies"].Add(new Dictionary<object, object>()
+                        {
+                            { "name", $"{arrNames[index]} error: {e.Message} fallback to local file." },
+                            { "type", "ss" },
+                            { "server", "google.com" },
+                            { "port", "11111" },
+                            { "cipher", "chacha20-ietf-poly1305" },
+                            { "password", "123456" },
+                            { "udp", "true" },
+                        });
+                        
+                        // fallback to local file
+                        object? localConfig;
+                        if(!System.IO.File.Exists($"./{arrNames[index]}.yml"))
+                            continue;
+                        
+                        var localConfigFile = await System.IO.File.ReadAllTextAsync($"./{arrNames[index]}.yml");
+                        using (var reader = new StringReader(localConfigFile))
+                        {
+                            localConfig = YamlDeserializer.Deserialize(reader);
+                        }
+
+                        if(localConfig is not IDictionary<object, object> localConfigDictionary)
+                            continue;
+                        
+                        if (localConfigDictionary["proxies"] is not List<object> listProxies) 
+                            continue;
+                        
+                        foreach (var proxy in listProxies)
+                        {
+                            if (proxy is not Dictionary<object, object> tempProxy) 
+                                continue;
+                            
+                            tempProxy["name"] = arrNames[index] + tempProxy["name"];
+                            allYamlResponses["proxies"].Add(tempProxy);
                         }
                     }
                 }
